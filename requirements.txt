@@ -1,3 +1,4 @@
+streamlit
 ddgs
 requests
 beautifulsoup4
