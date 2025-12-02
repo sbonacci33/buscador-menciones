@@ -1,0 +1,15 @@
+# Entorno virtual
+.venv/
+venv/
+
+# Cachés de Python
+__pycache__/
+*.pyc
+
+# Archivos generados por el script
+tweets_crudos.csv
+frecuencias_palabras.csv
+
+# Configuración específica del editor
+.vscode/
+.idea/
