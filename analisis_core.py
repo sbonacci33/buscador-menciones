@@ -1,8 +1,10 @@
-"""Funciones reutilizables para análisis de menciones en la web.
+"""Módulo central con la lógica de búsqueda y análisis de menciones web.
 
-Este módulo contiene utilidades de búsqueda, limpieza de texto y cálculo de
-frecuencias que pueden ser usadas tanto desde consola como desde una interfaz
-web en Streamlit.
+Incluye utilidades para:
+- Búsqueda en la web usando DuckDuckGo (vía ``ddgs``).
+- Limpieza de texto y normalización.
+- Conteo de menciones de un término.
+- Identificación de palabras asociadas más frecuentes.
 """
 
 from __future__ import annotations
@@ -19,6 +21,9 @@ from ddgs import DDGS
 from nltk.corpus import stopwords
 from unidecode import unidecode
 
+# Número fijo de resultados web a recuperar. Modificar aquí si se necesita.
+MAX_RESULTADOS_WEB = 50
+
 
 # =========================
 # UTILIDADES NLTK
@@ -32,6 +37,7 @@ def asegurar_stopwords_espanol() -> List[str]:
         nltk.download("stopwords")
         return stopwords.words("spanish")
     except Exception:
+        # Si falla la descarga, devolvemos lista vacía para no interrumpir el flujo.
         return []
 
 
@@ -85,32 +91,29 @@ def extraer_texto_de_url(url: str, timeout: int = 10) -> str:
 
 
 def buscar_en_web(
-    termino: str, fecha_desde: str, fecha_hasta: str, max_resultados_web: int
-) -> Tuple[pd.DataFrame, int]:
+    termino: str, max_resultados: int = MAX_RESULTADOS_WEB
+) -> pd.DataFrame:
     """Busca el término en la web con DuckDuckGo y devuelve un DataFrame.
 
-    ddgs no permite filtrar por rango de fechas de manera directa, así que el
-    filtro es aproximado y depende del motor de búsqueda.
+    Cada fila representa una página donde aparece el término al menos una vez.
+    Columnas mínimas: titulo, url, texto, num_menciones_termino.
     """
 
     resultados: List[Dict[str, str | int]] = []
     termino_patron = re.compile(re.escape(termino), flags=re.IGNORECASE)
-    total_paginas_consultadas = 0
 
     with DDGS() as buscador:
-        for resultado in buscador.text(keywords=termino, max_results=max_resultados_web):
+        for resultado in buscador.text(termino, max_results=max_resultados):
             url = resultado.get("href") or resultado.get("url")
             if not url:
                 continue
+
             titulo = resultado.get("title") or ""
-            fecha = resultado.get("date") or ""
             snippet = resultado.get("body") or resultado.get("snippet") or ""
 
             texto = extraer_texto_de_url(url)
             if not texto:
                 continue
-
-            total_paginas_consultadas += 1
 
             if not termino_patron.search(texto):
                 continue
@@ -118,17 +121,15 @@ def buscar_en_web(
             num_menciones = len(re.findall(termino_patron, texto))
             resultados.append(
                 {
-                    "fuente": "web",
                     "titulo": titulo,
                     "url": url,
-                    "fecha": fecha,
                     "snippet": snippet,
                     "texto": texto,
                     "num_menciones_termino": num_menciones,
                 }
             )
 
-    return pd.DataFrame(resultados), total_paginas_consultadas
+    return pd.DataFrame(resultados)
 
 
 # =========================
@@ -146,15 +147,24 @@ def _generar_palabras_limpias(textos: Iterable[str]) -> List[str]:
     return palabras
 
 
-def contar_palabras_frecuentes(
-    df: pd.DataFrame, termino: str, top_n: int = 30
+def contar_palabras_asociadas(
+    df_paginas: pd.DataFrame, termino: str, top_n: int = 30
 ) -> Tuple[List[Tuple[str, int]], Counter]:
-    """Calcula las palabras más frecuentes excluyendo stopwords y el término buscado."""
+    """Calcula las palabras asociadas más frecuentes.
+
+    Excluye stopwords, palabras del término y palabras con longitud <= 2.
+    Devuelve la lista de las ``top_n`` más frecuentes y el ``Counter`` completo.
+    """
 
     stopwords_es = set(asegurar_stopwords_espanol())
     palabras_termino = set(limpiar_texto(termino).split())
 
-    todas_las_palabras = _generar_palabras_limpias(df.get("texto", []))
+    # Usar solo los textos donde el término fue mencionado al menos una vez.
+    textos_relevantes = df_paginas.loc[
+        df_paginas["num_menciones_termino"] >= 1, "texto"
+    ].tolist()
+
+    todas_las_palabras = _generar_palabras_limpias(textos_relevantes)
 
     palabras_filtradas = [
         palabra
@@ -169,45 +179,39 @@ def contar_palabras_frecuentes(
     return top_palabras, contador
 
 
-def construir_dataframe_frecuencias(
-    contador: Counter, top_n: int = 30
-) -> pd.DataFrame:
-    """Construye un DataFrame ordenado con las ``top_n`` palabras más frecuentes."""
-
-    top_palabras = contador.most_common(top_n)
-    return pd.DataFrame(top_palabras, columns=["palabra", "frecuencia"])
-
-
 # =========================
 # PIPELINE PRINCIPAL REUTILIZABLE
 # =========================
 def analizar_menciones_web(
-    termino: str, fecha_desde: str, fecha_hasta: str, max_resultados_web: int, top_n: int = 30
-) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, int]]:
-    """Ejecuta la búsqueda web y devuelve resultados, frecuencias y métricas."""
+    termino: str,
+    fecha_desde: str,
+    fecha_hasta: str,
+    top_n: int = 30,
+    max_resultados_web: int = MAX_RESULTADOS_WEB,
+) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, str | int]]:
+    """Ejecuta la búsqueda web y devuelve páginas, top palabras y métricas."""
 
-    df_paginas, total_paginas_consultadas = buscar_en_web(
-        termino=termino,
-        fecha_desde=fecha_desde,
-        fecha_hasta=fecha_hasta,
-        max_resultados_web=max_resultados_web,
-    )
+    df_paginas = buscar_en_web(termino=termino, max_resultados=max_resultados_web)
 
     if df_paginas.empty:
         resumen = {
-            "total_paginas_consultadas": total_paginas_consultadas,
-            "total_paginas_con_menciones": 0,
+            "termino": termino,
+            "fecha_desde": fecha_desde,
+            "fecha_hasta": fecha_hasta,
+            "total_paginas_con_mencion": 0,
             "total_menciones_termino": 0,
         }
         return df_paginas, pd.DataFrame(columns=["palabra", "frecuencia"]), resumen
 
-    top_palabras, contador = contar_palabras_frecuentes(df_paginas, termino, top_n=top_n)
-    df_frecuencias = pd.DataFrame(top_palabras, columns=["palabra", "frecuencia"])
+    top_palabras, contador = contar_palabras_asociadas(df_paginas, termino, top_n=top_n)
+    df_top_palabras = pd.DataFrame(top_palabras, columns=["palabra", "frecuencia"])
 
     resumen = {
-        "total_paginas_consultadas": total_paginas_consultadas,
-        "total_paginas_con_menciones": len(df_paginas),
+        "termino": termino,
+        "fecha_desde": fecha_desde,
+        "fecha_hasta": fecha_hasta,
+        "total_paginas_con_mencion": len(df_paginas),
         "total_menciones_termino": int(df_paginas["num_menciones_termino"].sum()),
     }
 
-    return df_paginas, df_frecuencias, resumen
+    return df_paginas, df_top_palabras, resumen
