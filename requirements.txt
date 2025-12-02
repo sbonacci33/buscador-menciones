@@ -1,0 +1,7 @@
+duckduckgo-search
+beautifulsoup4
+requests
+pandas
+nltk
+unidecode
+twscrape
