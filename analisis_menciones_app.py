@@ -1,4 +1,4 @@
-"""Aplicación web en Streamlit para analizar menciones en la web."""
+"""Aplicación Streamlit para analizar menciones de un término en la web."""
 
 from __future__ import annotations
 
@@ -7,137 +7,117 @@ from datetime import date, timedelta
 import pandas as pd
 import streamlit as st
 
-from analisis_core import analizar_menciones_web, limpiar_texto
+from analisis_core import (
+    MAX_RESULTADOS_WEB,
+    analizar_menciones_web,
+    limpiar_texto,
+)
 
 st.set_page_config(page_title="Análisis de menciones", layout="wide")
 
 # =========================
-# CONFIGURACIÓN DE LA PÁGINA
+# TÍTULO E INTRODUCCIÓN
 # =========================
 st.title("Análisis de menciones en la web")
 st.write(
-    "Carga resultados de DuckDuckGo y calcula cuántas veces aparece tu término"
-    " en las páginas encontradas. El filtro por fecha es aproximado porque la"
-    " API de búsqueda no expone un rango exacto."
+    "Busca páginas en la web que mencionen un término, cuenta las veces que"
+    " aparece y muestra las palabras más asociadas en los textos encontrados."
 )
+
 
 # =========================
 # ENTRADAS DEL USUARIO
 # =========================
-def fecha_por_defecto() -> tuple[date, date]:
-    """Devuelve un rango de fechas por defecto (últimos 30 días)."""
+def fechas_por_defecto() -> tuple[date, date]:
+    """Rango por defecto: últimos 30 días."""
 
     hoy = date.today()
     return hoy - timedelta(days=30), hoy
 
 
 def mostrar_formulario():
-    """Muestra el formulario de parámetros en la barra lateral."""
+    """Muestra inputs principales en la página."""
 
-    st.sidebar.header("Parámetros de búsqueda")
-    termino = st.sidebar.text_input(
-        "Término o nombre a analizar", placeholder="Ej: Lionel Messi"
+    termino = st.text_input("Término o nombre", placeholder="Ej: Lionel Messi")
+
+    fecha_ini_defecto, fecha_fin_defecto = fechas_por_defecto()
+    col1, col2 = st.columns(2)
+    with col1:
+        fecha_desde = st.date_input("Fecha desde", value=fecha_ini_defecto)
+    with col2:
+        fecha_hasta = st.date_input("Fecha hasta", value=fecha_fin_defecto)
+
+    return termino.strip(), fecha_desde, fecha_hasta
+
+
+def mostrar_resumen(resumen: dict):
+    """Muestra métricas resumidas del análisis."""
+
+    st.write(
+        f"Plazo analizado: {resumen.get('fecha_desde')} a {resumen.get('fecha_hasta')}"
+    )
+    col1, col2 = st.columns(2)
+    col1.metric("Páginas con menciones", resumen.get("total_paginas_con_mencion", 0))
+    col2.metric("Menciones totales del término", resumen.get("total_menciones_termino", 0))
+
+
+def mostrar_tabla_paginas(df_paginas: pd.DataFrame):
+    """Despliega tabla con las páginas encontradas."""
+
+    st.subheader("Páginas encontradas")
+    df_para_tabla = df_paginas.copy()
+    df_para_tabla["texto_resumen"] = df_para_tabla["texto"].apply(
+        lambda x: (limpiar_texto(str(x))[:200] + "...") if isinstance(x, str) else ""
+    )
+    st.dataframe(
+        df_para_tabla[["titulo", "url", "num_menciones_termino", "texto_resumen"]],
+        use_container_width=True,
     )
 
-    fecha_ini_defecto, fecha_fin_defecto = fecha_por_defecto()
-    fecha_inicio = st.sidebar.date_input("Fecha de inicio", value=fecha_ini_defecto)
-    fecha_fin = st.sidebar.date_input("Fecha de fin", value=fecha_fin_defecto)
 
-    max_resultados = st.sidebar.number_input(
-        "Máximo de resultados web", min_value=1, max_value=200, value=50
-    )
+def mostrar_palabras(df_top_palabras: pd.DataFrame):
+    """Despliega tabla y gráfico de palabras asociadas."""
 
-    incluir_redes = st.sidebar.checkbox(
-        "Incluir redes sociales (no implementado)", value=False
-    )
+    st.subheader("Palabras asociadas más frecuentes")
+    if df_top_palabras.empty:
+        st.info("No se encontraron palabras asociadas para este conjunto de páginas.")
+        return
 
-    return termino, fecha_inicio, fecha_fin, int(max_resultados), incluir_redes
+    st.dataframe(df_top_palabras, use_container_width=True)
+    st.bar_chart(df_top_palabras.set_index("palabra"))
 
-
-termino, fecha_inicio, fecha_fin, max_resultados, incluir_redes = mostrar_formulario()
-
-if incluir_redes:
-    st.info("La opción de redes sociales está planificada pero aún no se implementa.")
 
 # =========================
-# BOTÓN DE ACCIÓN
+# LÓGICA DE LA PÁGINA
 # =========================
+termino, fecha_desde, fecha_hasta = mostrar_formulario()
+
 if st.button("Analizar"):
-    termino = termino.strip()
     if not termino:
         st.error("Por favor ingresa un término o nombre para analizar.")
-    elif fecha_inicio > fecha_fin:
+    elif fecha_desde > fecha_hasta:
         st.error("La fecha de inicio debe ser anterior o igual a la fecha de fin.")
     else:
-        fecha_inicio_str = fecha_inicio.isoformat()
-        fecha_fin_str = fecha_fin.isoformat()
+        fecha_desde_str = fecha_desde.isoformat()
+        fecha_hasta_str = fecha_hasta.isoformat()
 
         with st.spinner("Buscando y analizando páginas web..."):
-            df_paginas, df_frecuencias, resumen = analizar_menciones_web(
+            df_paginas, df_top_palabras, resumen = analizar_menciones_web(
                 termino=termino,
-                fecha_desde=fecha_inicio_str,
-                fecha_hasta=fecha_fin_str,
-                max_resultados_web=max_resultados,
+                fecha_desde=fecha_desde_str,
+                fecha_hasta=fecha_hasta_str,
                 top_n=30,
+                max_resultados_web=MAX_RESULTADOS_WEB,
             )
 
         if df_paginas.empty:
-            st.warning(
-                "No se encontraron páginas que mencionen el término en la web."
-            )
+            st.warning("No se encontraron páginas que mencionen el término en la web.")
         else:
-            st.success("Análisis completado.")
+            mostrar_resumen(resumen)
 
-            # =========================
-            # MÉTRICAS RESUMIDAS
-            # =========================
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Páginas consultadas", resumen.get("total_paginas_consultadas", 0))
-            col2.metric("Páginas con menciones", resumen.get("total_paginas_con_menciones", 0))
-            col3.metric("Menciones totales del término", resumen.get("total_menciones_termino", 0))
+            with st.expander("Ver páginas analizadas", expanded=True):
+                mostrar_tabla_paginas(df_paginas)
 
-            # =========================
-            # TABLA DE PÁGINAS
-            # =========================
-            st.subheader("Páginas encontradas")
-            df_para_tabla = df_paginas.copy()
-            df_para_tabla["texto_resumen"] = df_para_tabla["texto"].apply(
-                lambda x: (limpiar_texto(str(x))[:200] + "...") if isinstance(x, str) else ""
-            )
-            st.dataframe(
-                df_para_tabla[
-                    ["titulo", "url", "num_menciones_termino", "texto_resumen"]
-                ],
-                use_container_width=True,
-            )
-
-            csv_paginas = df_paginas.to_csv(index=False).encode("utf-8")
-            st.download_button(
-                "Descargar CSV de páginas",
-                data=csv_paginas,
-                file_name="paginas_web.csv",
-                mime="text/csv",
-            )
-
-            # =========================
-            # FRECUENCIAS DE PALABRAS
-            # =========================
-            st.subheader("Palabras más frecuentes")
-            if not df_frecuencias.empty:
-                st.dataframe(df_frecuencias, use_container_width=True)
-                st.bar_chart(df_frecuencias.set_index("palabra"))
-
-                csv_frecuencias = df_frecuencias.to_csv(index=False).encode("utf-8")
-                st.download_button(
-                    "Descargar CSV de frecuencias",
-                    data=csv_frecuencias,
-                    file_name="frecuencias_palabras.csv",
-                    mime="text/csv",
-                )
-            else:
-                st.info(
-                    "No se encontraron palabras frecuentes (revisa el término o aumenta el número de resultados)."
-                )
-
+            mostrar_palabras(df_top_palabras)
 else:
-    st.info("Completa los datos y presiona **Analizar** para comenzar.")
+    st.info("Ingresa los datos y presiona **Analizar** para comenzar.")
