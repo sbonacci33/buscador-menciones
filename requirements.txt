@@ -1,7 +1,6 @@
-duckduckgo-search
-beautifulsoup4
+ddgs
 requests
+beautifulsoup4
 pandas
 nltk
 unidecode
-twscrape
