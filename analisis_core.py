@@ -14,7 +14,7 @@ import nltk
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
-from ddgs import DDGS
+from ddgs import DDGS, DDGSException
 from nltk.corpus import stopwords
 from unidecode import unidecode
 
@@ -33,18 +33,29 @@ MODOS_COINCIDENCIA_VALIDOS = {"frase_exacta", "todas_las_palabras", "cualquiera"
 # =========================
 # UTILIDADES DE STOPWORDS
 # =========================
-def asegurar_stopwords_espanol() -> List[str]:
-    """Devuelve las stopwords en español, descargándolas si es necesario."""
+_stopwords_es: set | None = None
+
+
+def asegurar_stopwords_espanol() -> set[str]:
+    """Devuelve las stopwords en español normalizadas sin tildes."""
+
+    import nltk
+
+    global _stopwords_es
+    if _stopwords_es is not None:
+        return _stopwords_es
 
     try:
-        return stopwords.words("spanish")
+        palabras = stopwords.words("spanish")
     except LookupError:
         nltk.download("stopwords")
-        return stopwords.words("spanish")
+        palabras = stopwords.words("spanish")
     except Exception:
-        # Si ocurre cualquier error inesperado, se devuelve una lista vacía para
-        # no interrumpir el flujo general.
-        return []
+        _stopwords_es = set()
+        return _stopwords_es
+
+    _stopwords_es = {unidecode(p.lower()) for p in palabras}
+    return _stopwords_es
 
 
 # =========================
@@ -195,41 +206,47 @@ def buscar_en_web(
     query = _construir_query(grupo_terminos, modo)
     registros: List[Dict[str, object]] = []
 
-    with DDGS() as buscador:
-        for resultado in buscador.text(query, max_results=max_resultados, region=idioma):
-            url = resultado.get("href") or resultado.get("url")
-            if not url or not _filtrar_por_dominio(url, dominio_filtro):
-                continue
+    try:
+        with DDGS() as buscador:
+            for resultado in buscador.text(
+                query, max_results=max_resultados, safesearch="moderate"
+            ):
+                url = resultado.get("href") or resultado.get("url")
+                if not url or not _filtrar_por_dominio(url, dominio_filtro):
+                    continue
 
-            titulo = resultado.get("title") or ""
-            snippet = resultado.get("body") or resultado.get("snippet") or ""
+                titulo = resultado.get("title") or ""
+                snippet = resultado.get("body") or resultado.get("snippet") or ""
 
-            texto = extraer_texto_de_url(url)
-            if not texto:
-                continue
+                texto = extraer_texto_de_url(url)
+                if not texto:
+                    continue
 
-            texto_limpio = limpiar_texto(texto)
-            menciones_por_termino = _contar_menciones_en_texto(
-                texto_limpio, grupo_terminos, modo
-            )
-            menciones_totales = sum(menciones_por_termino.values())
-            if menciones_totales == 0:
-                # Si no hay menciones, se descarta la página de la muestra
-                continue
+                texto_limpio = limpiar_texto(texto)
+                menciones_por_termino = _contar_menciones_en_texto(
+                    texto_limpio, grupo_terminos, modo
+                )
+                menciones_totales = sum(menciones_por_termino.values())
+                if menciones_totales == 0:
+                    # Si no hay menciones, se descarta la página de la muestra
+                    continue
 
-            registro: Dict[str, object] = {
-                "titulo": titulo,
-                "url": url,
-                "snippet": snippet,
-                "texto": texto,
-                "menciones_totales_pagina": menciones_totales,
-            }
+                registro: Dict[str, object] = {
+                    "titulo": titulo,
+                    "url": url,
+                    "snippet": snippet,
+                    "texto": texto,
+                    "menciones_totales_pagina": menciones_totales,
+                }
 
-            for idx, termino in enumerate(grupo_terminos, start=1):
-                columna = f"menciones_termino_{idx}"
-                registro[columna] = menciones_por_termino.get(termino, 0)
+                for idx, termino in enumerate(grupo_terminos, start=1):
+                    columna = f"menciones_termino_{idx}"
+                    registro[columna] = menciones_por_termino.get(termino, 0)
 
-            registros.append(registro)
+                registros.append(registro)
+    except DDGSException as e:
+        print(f"Error al buscar en la web con ddgs: {e}")
+        return pd.DataFrame()
 
     return pd.DataFrame(registros)
 
@@ -268,18 +285,24 @@ def contar_palabras_asociadas(
 
     todas_las_palabras = _generar_palabras_limpias(textos_relevantes)
 
-    stopwords_es = set(asegurar_stopwords_espanol())
+    stopwords_es = asegurar_stopwords_espanol()
     palabras_terminos = set()
     for termino in grupo_terminos:
-        palabras_terminos.update(limpiar_texto(termino).split())
+        for palabra in limpiar_texto(termino).split():
+            palabra_normalizada = unidecode(palabra.lower())
+            if palabra_normalizada:
+                palabras_terminos.add(palabra_normalizada)
 
-    palabras_filtradas = [
-        palabra
-        for palabra in todas_las_palabras
-        if palabra not in stopwords_es
-        and palabra not in palabras_terminos
-        and len(palabra) > 2
-    ]
+    palabras_filtradas: List[str] = []
+    for palabra in todas_las_palabras:
+        palabra_normalizada = unidecode(palabra.lower())
+        if len(palabra_normalizada) <= 2:
+            continue
+        if palabra_normalizada in stopwords_es:
+            continue
+        if palabra_normalizada in palabras_terminos:
+            continue
+        palabras_filtradas.append(palabra_normalizada)
 
     contador: CounterType[str] = Counter(palabras_filtradas)
     top_palabras = contador.most_common(top_n)
@@ -300,7 +323,7 @@ def contar_bigramas(
     ].tolist()
 
     palabras = _generar_palabras_limpias(textos_relevantes)
-    stopwords_es = set(asegurar_stopwords_espanol())
+    stopwords_es = asegurar_stopwords_espanol()
     palabras_terminos = set()
     for termino in grupo_terminos:
         palabras_terminos.update(limpiar_texto(termino).split())
