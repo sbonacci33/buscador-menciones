@@ -14,7 +14,7 @@ import nltk
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
-from ddgs import DDGS, DDGSException
+from ddgs import DDGS
 from nltk.corpus import stopwords
 from unidecode import unidecode
 
@@ -244,8 +244,12 @@ def buscar_en_web(
                     registro[columna] = menciones_por_termino.get(termino, 0)
 
                 registros.append(registro)
-    except DDGSException as e:
-        print(f"Error al buscar en la web con ddgs: {e}")
+    except Exception as error:  # pragma: no cover - dependencia externa
+        print(
+            "Error al buscar en la web con ddgs. "
+            "Revisa la instalación de la librería o tu conexión a Internet."
+        )
+        print(f"Detalle: {error}")
         return pd.DataFrame()
 
     return pd.DataFrame(registros)
