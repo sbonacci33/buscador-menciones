@@ -63,6 +63,10 @@ def _mostrar_detalle_resumen(resumen: dict):
         f"**Modo de coincidencia:** {resumen.get('modo_coincidencia')}\n"
         f"**Dominio filtrado:** {resumen.get('dominio_filtro') or 'Sin filtro'}"
     )
+    st.markdown(
+        f"**Páginas analizadas (top):** {resumen.get('paginas_top_mostradas', 0)} "
+        "(se priorizan las 20 con más menciones)."
+    )
     st.caption(
         "Recuerda: se analiza una muestra de los primeros resultados devueltos "
         "por DuckDuckGo (ddgs). No es un recuento exhaustivo de toda la web."
@@ -221,6 +225,10 @@ else:
                 st.markdown(f"**Modo de coincidencia:** {modo_coincidencia_label}")
                 st.markdown(
                     f"**Dominio filtrado:** {dominio_filtro if dominio_filtro else 'Sin filtro'}"
+                )
+                st.markdown(
+                    "**Selección de páginas:** se muestran hasta 20 páginas con más "
+                    "menciones en la muestra consultada."
                 )
                 st.markdown(
                     "**Qué significan los modos:**\n"
