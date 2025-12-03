@@ -1,13 +1,13 @@
-"""Módulo de lógica para buscar y analizar menciones de términos en la web.
+"""Módulo central para buscar y analizar menciones de términos en la web.
 
 Toda la lógica de negocio vive aquí para que la interfaz (Streamlit u otras)
 pueda reutilizarla sin dependencias cruzadas.
 """
-
 from __future__ import annotations
 
 import re
 from collections import Counter
+from typing import Counter as CounterType
 from typing import Dict, Iterable, List, Tuple
 
 import nltk
@@ -18,9 +18,16 @@ from ddgs import DDGS
 from nltk.corpus import stopwords
 from unidecode import unidecode
 
-# Número fijo de resultados web que se descargarán y analizarán.
-# Nota: es una muestra, no un censo completo de toda la web.
-MAX_RESULTADOS_WEB = 200
+# Opciones de profundidad amigables para el usuario. Representan cuántos
+# resultados se consultan como muestra (no toda la web).
+PROFUNDIDAD_OPCIONES: Dict[str, int] = {
+    "Rápido": 50,
+    "Normal": 100,
+    "Profundo": 200,
+}
+
+# Modos válidos para contar menciones.
+MODOS_COINCIDENCIA_VALIDOS = {"frase_exacta", "todas_las_palabras", "cualquiera"}
 
 
 # =========================
@@ -95,52 +102,103 @@ def extraer_texto_de_url(url: str, timeout: int = 10) -> str:
 # =========================
 # BÚSQUEDA Y CONTEO DE MENCIONES
 # =========================
-def _construir_query(grupo_terminos: List[str]) -> str:
-    """Construye una query simple uniendo términos con OR."""
+def _normalizar_grupo_terminos(grupo_terminos: List[str]) -> List[str]:
+    """Elimina términos vacíos y limita la lista a 3 elementos."""
+
+    return [termino.strip() for termino in grupo_terminos if termino and termino.strip()][
+        :3
+    ]
+
+
+def _construir_query(grupo_terminos: List[str], modo_coincidencia: str) -> str:
+    """Construye una query combinando los términos con operadores OR/AND."""
 
     if not grupo_terminos:
         return ""
-    termino_principal = '"' + '" OR "'.join(grupo_terminos) + '"'
-    return termino_principal
+
+    if modo_coincidencia == "cualquiera":
+        return " OR ".join([f'"{t}"' for t in grupo_terminos])
+    if modo_coincidencia == "todas_las_palabras":
+        return " ".join([f'"{t}"' for t in grupo_terminos])
+    # frase_exacta como caso por defecto
+    return " OR ".join([f'"{t}"' for t in grupo_terminos])
+
+
+def _contar_menciones_termino(texto_limpio: str, termino: str, modo: str) -> int:
+    """Cuenta menciones de un término según el modo de coincidencia elegido."""
+
+    termino_limpio = limpiar_texto(termino)
+    if not termino_limpio:
+        return 0
+
+    palabras_termino = termino_limpio.split()
+    if not palabras_termino:
+        return 0
+
+    palabras_texto = texto_limpio.split()
+
+    if modo == "frase_exacta":
+        patron = r"\b" + re.escape(termino_limpio) + r"\b"
+        return len(re.findall(patron, texto_limpio))
+
+    conteos = Counter(palabras_texto)
+
+    if modo == "todas_las_palabras":
+        # Número de veces que aparecen todas las palabras (mínimo común)
+        return min(conteos.get(p, 0) for p in palabras_termino)
+
+    # Modo "cualquiera": suma de apariciones individuales
+    return sum(conteos.get(p, 0) for p in palabras_termino)
 
 
 def _contar_menciones_en_texto(
-    texto_limpio: str, grupo_terminos: List[str]
+    texto_limpio: str, grupo_terminos: List[str], modo_coincidencia: str
 ) -> Dict[str, int]:
     """Cuenta menciones por término en un texto ya limpiado."""
 
-    palabras_texto = texto_limpio.split()
     conteo: Dict[str, int] = {}
     for termino in grupo_terminos:
-        termino_limpio = limpiar_texto(termino)
-        palabras_termino = termino_limpio.split()
-        if not palabras_termino:
-            conteo[termino] = 0
-            continue
-        menciones = sum(palabras_texto.count(p) for p in palabras_termino)
-        conteo[termino] = menciones
+        conteo[termino] = _contar_menciones_termino(
+            texto_limpio, termino, modo_coincidencia
+        )
     return conteo
 
 
+def _filtrar_por_dominio(url: str, dominio_filtro: str | None) -> bool:
+    """Devuelve True si la URL pasa el filtro de dominio (o no hay filtro)."""
+
+    if not dominio_filtro:
+        return True
+    return dominio_filtro.lower() in url.lower()
+
+
 def buscar_en_web(
-    grupo_terminos: List[str], max_resultados: int = MAX_RESULTADOS_WEB
+    grupo_terminos: List[str],
+    profundidad: str = "Normal",
+    modo_coincidencia: str = "frase_exacta",
+    idioma: str = "es",
+    dominio_filtro: str | None = None,
 ) -> pd.DataFrame:
     """Busca un grupo de términos y devuelve páginas con menciones.
 
-    Los resultados se basan en los primeros ``max_resultados`` devueltos por el
-    motor de búsqueda (muestra, no censo completo de la web).
+    Los resultados se basan en los primeros N resultados devueltos por el motor
+    de búsqueda (muestra, no censo completo de la web).
     """
 
+    grupo_terminos = _normalizar_grupo_terminos(grupo_terminos)
     if not grupo_terminos:
         return pd.DataFrame()
 
-    query = _construir_query(grupo_terminos)
+    max_resultados = PROFUNDIDAD_OPCIONES.get(profundidad, PROFUNDIDAD_OPCIONES["Normal"])
+    modo = modo_coincidencia if modo_coincidencia in MODOS_COINCIDENCIA_VALIDOS else "frase_exacta"
+
+    query = _construir_query(grupo_terminos, modo)
     registros: List[Dict[str, object]] = []
 
     with DDGS() as buscador:
-        for resultado in buscador.text(query, max_results=max_resultados):
+        for resultado in buscador.text(query, max_results=max_resultados, region=idioma):
             url = resultado.get("href") or resultado.get("url")
-            if not url:
+            if not url or not _filtrar_por_dominio(url, dominio_filtro):
                 continue
 
             titulo = resultado.get("title") or ""
@@ -152,10 +210,11 @@ def buscar_en_web(
 
             texto_limpio = limpiar_texto(texto)
             menciones_por_termino = _contar_menciones_en_texto(
-                texto_limpio, grupo_terminos
+                texto_limpio, grupo_terminos, modo
             )
             menciones_totales = sum(menciones_por_termino.values())
             if menciones_totales == 0:
+                # Si no hay menciones, se descarta la página de la muestra
                 continue
 
             registro: Dict[str, object] = {
@@ -193,7 +252,7 @@ def contar_palabras_asociadas(
     df_paginas: pd.DataFrame,
     grupo_terminos: List[str],
     top_n: int = 30,
-) -> Tuple[pd.DataFrame, Counter]:
+) -> Tuple[pd.DataFrame, CounterType[str]]:
     """Calcula las palabras asociadas más frecuentes.
 
     Usa solo páginas con menciones. Excluye stopwords, palabras de los términos y
@@ -222,10 +281,45 @@ def contar_palabras_asociadas(
         and len(palabra) > 2
     ]
 
-    contador = Counter(palabras_filtradas)
+    contador: CounterType[str] = Counter(palabras_filtradas)
     top_palabras = contador.most_common(top_n)
     df_top_palabras = pd.DataFrame(top_palabras, columns=["palabra", "frecuencia"])
     return df_top_palabras, contador
+
+
+def contar_bigramas(
+    df_paginas: pd.DataFrame, grupo_terminos: List[str], top_n: int = 20
+) -> pd.DataFrame:
+    """Calcula los bigramas más frecuentes excluyendo stopwords y términos."""
+
+    if df_paginas.empty:
+        return pd.DataFrame(columns=["bigram", "frecuencia"])
+
+    textos_relevantes = df_paginas.loc[
+        df_paginas["menciones_totales_pagina"] > 0, "texto"
+    ].tolist()
+
+    palabras = _generar_palabras_limpias(textos_relevantes)
+    stopwords_es = set(asegurar_stopwords_espanol())
+    palabras_terminos = set()
+    for termino in grupo_terminos:
+        palabras_terminos.update(limpiar_texto(termino).split())
+
+    palabras_filtradas = [
+        p
+        for p in palabras
+        if p not in stopwords_es and p not in palabras_terminos and len(p) > 2
+    ]
+
+    bigramas = [
+        f"{palabras_filtradas[i]} {palabras_filtradas[i + 1]}"
+        for i in range(len(palabras_filtradas) - 1)
+    ]
+    contador: CounterType[str] = Counter(bigramas)
+    df_top_bigramas = pd.DataFrame(
+        contador.most_common(top_n), columns=["bigram", "frecuencia"]
+    )
+    return df_top_bigramas
 
 
 # =========================
@@ -235,18 +329,28 @@ def analizar_menciones_web(
     grupo_terminos: List[str],
     fecha_desde: str,
     fecha_hasta: str,
-    top_n: int = 30,
-    max_resultados: int = MAX_RESULTADOS_WEB,
+    profundidad: str = "Normal",
+    modo_coincidencia: str = "frase_exacta",
+    dominio_filtro: str | None = None,
+    top_n_palabras: int = 30,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, object]]:
     """Ejecuta la búsqueda web y devuelve páginas, top palabras y estadísticas."""
 
-    df_paginas = buscar_en_web(grupo_terminos, max_resultados=max_resultados)
+    df_paginas = buscar_en_web(
+        grupo_terminos,
+        profundidad=profundidad,
+        modo_coincidencia=modo_coincidencia,
+        dominio_filtro=dominio_filtro,
+    )
 
     if df_paginas.empty:
         resumen = {
             "terminos": grupo_terminos,
             "fecha_desde": fecha_desde,
             "fecha_hasta": fecha_hasta,
+            "profundidad": profundidad,
+            "modo_coincidencia": modo_coincidencia,
+            "dominio_filtro": dominio_filtro,
             "total_paginas_consultadas": 0,
             "paginas_con_menciones": 0,
             "menciones_totales_grupo": 0,
@@ -256,7 +360,7 @@ def analizar_menciones_web(
         return df_paginas, pd.DataFrame(columns=["palabra", "frecuencia"]), resumen
 
     df_top_palabras, _ = contar_palabras_asociadas(
-        df_paginas, grupo_terminos, top_n=top_n
+        df_paginas, grupo_terminos, top_n=top_n_palabras
     )
 
     menciones_por_termino_total: Dict[str, int] = {}
@@ -279,6 +383,12 @@ def analizar_menciones_web(
         "terminos": grupo_terminos,
         "fecha_desde": fecha_desde,
         "fecha_hasta": fecha_hasta,
+        "profundidad": profundidad,
+        "modo_coincidencia": modo_coincidencia,
+        "dominio_filtro": dominio_filtro,
+        "max_resultados_muestra": PROFUNDIDAD_OPCIONES.get(
+            profundidad, PROFUNDIDAD_OPCIONES["Normal"]
+        ),
         "total_paginas_consultadas": len(df_paginas),
         "paginas_con_menciones": paginas_con_menciones,
         "menciones_totales_grupo": menciones_totales_grupo,
