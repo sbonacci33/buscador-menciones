@@ -121,18 +121,31 @@ def _normalizar_grupo_terminos(grupo_terminos: List[str]) -> List[str]:
     ]
 
 
-def _construir_query(grupo_terminos: List[str], modo_coincidencia: str) -> str:
-    """Construye una query combinando los términos con operadores OR/AND."""
+def _construir_query(
+    grupo_terminos: List[str], modo_coincidencia: str, fecha_desde: str | None, fecha_hasta: str | None
+) -> str:
+    """Construye una query combinando los términos y el rango de fechas."""
 
     if not grupo_terminos:
         return ""
 
     if modo_coincidencia == "cualquiera":
-        return " OR ".join([f'"{t}"' for t in grupo_terminos])
-    if modo_coincidencia == "todas_las_palabras":
-        return " ".join([f'"{t}"' for t in grupo_terminos])
-    # frase_exacta como caso por defecto
-    return " OR ".join([f'"{t}"' for t in grupo_terminos])
+        base_query = " OR ".join([f'"{t}"' for t in grupo_terminos])
+    elif modo_coincidencia == "todas_las_palabras":
+        base_query = " ".join([f'"{t}"' for t in grupo_terminos])
+    else:
+        # frase_exacta como caso por defecto
+        base_query = " OR ".join([f'"{t}"' for t in grupo_terminos])
+
+    filtros_fecha: List[str] = []
+    if fecha_desde:
+        filtros_fecha.append(f"after:{fecha_desde}")
+    if fecha_hasta:
+        filtros_fecha.append(f"before:{fecha_hasta}")
+
+    if filtros_fecha:
+        return f"{base_query} {' '.join(filtros_fecha)}"
+    return base_query
 
 
 def _contar_menciones_termino(texto_limpio: str, termino: str, modo: str) -> int:
@@ -189,6 +202,8 @@ def buscar_en_web(
     modo_coincidencia: str = "frase_exacta",
     idioma: str = "es",
     dominio_filtro: str | None = None,
+    fecha_desde: str | None = None,
+    fecha_hasta: str | None = None,
 ) -> pd.DataFrame:
     """Busca un grupo de términos y devuelve páginas con menciones.
 
@@ -203,7 +218,7 @@ def buscar_en_web(
     max_resultados = PROFUNDIDAD_OPCIONES.get(profundidad, PROFUNDIDAD_OPCIONES["Normal"])
     modo = modo_coincidencia if modo_coincidencia in MODOS_COINCIDENCIA_VALIDOS else "frase_exacta"
 
-    query = _construir_query(grupo_terminos, modo)
+    query = _construir_query(grupo_terminos, modo, fecha_desde, fecha_hasta)
     registros: List[Dict[str, object]] = []
 
     try:
@@ -229,6 +244,12 @@ def buscar_en_web(
                 menciones_totales = sum(menciones_por_termino.values())
                 if menciones_totales == 0:
                     # Si no hay menciones, se descarta la página de la muestra
+                    continue
+
+                # Si se especificaron múltiples términos, todos deben aparecer
+                if len(grupo_terminos) > 1 and any(
+                    menciones_por_termino.get(termino, 0) == 0 for termino in grupo_terminos
+                ):
                     continue
 
                 registro: Dict[str, object] = {
@@ -368,7 +389,14 @@ def analizar_menciones_web(
         profundidad=profundidad,
         modo_coincidencia=modo_coincidencia,
         dominio_filtro=dominio_filtro,
+        fecha_desde=fecha_desde,
+        fecha_hasta=fecha_hasta,
     )
+
+    if not df_paginas.empty:
+        df_paginas = df_paginas.sort_values(
+            by="menciones_totales_pagina", ascending=False
+        ).head(20)
 
     if df_paginas.empty:
         resumen = {
@@ -383,6 +411,7 @@ def analizar_menciones_web(
             "menciones_totales_grupo": 0,
             "menciones_por_termino": {t: 0 for t in grupo_terminos},
             "promedio_menciones_por_pagina": 0,
+            "paginas_top_mostradas": 0,
         }
         return df_paginas, pd.DataFrame(columns=["palabra", "frecuencia"]), resumen
 
@@ -421,6 +450,7 @@ def analizar_menciones_web(
         "menciones_totales_grupo": menciones_totales_grupo,
         "menciones_por_termino": menciones_por_termino_total,
         "promedio_menciones_por_pagina": promedio,
+        "paginas_top_mostradas": len(df_paginas),
     }
 
     return df_paginas, df_top_palabras, resumen
