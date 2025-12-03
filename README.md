@@ -1,65 +1,76 @@
-# Análisis de menciones en la web
+# Buscador de menciones web (MVP estilo SaaS)
 
-Este proyecto ofrece un script en Python para buscar un término en la web, extraer el texto de las páginas encontradas y obtener tanto el número de menciones del término como las palabras más frecuentes del contenido relacionado. Está pensado para principiantes: cada paso del flujo está comentado y explicado.
+Plataforma modular en Python para monitorear menciones de marcas, personas o proyectos en la web. Utiliza DuckDuckGo (`ddgs`) como fuente inicial, persiste resultados en SQLite y ofrece un tablero profesional en Streamlit listo para evolucionar hacia un producto SaaS.
+
+## Arquitectura de carpetas
+
+- `analisis_core.py`: lógica de negocio (búsqueda, conteo de menciones, estadísticas y palabras asociadas).
+- `fuentes_web.py`: integración con motores de búsqueda (ddgs real + stubs para Brave, Bing, Google CSE y SerpAPI).
+- `datos_repository.py`: capa de persistencia con SQLAlchemy/SQLite (paginas, terminos, menciones).
+- `config.py`: configuración vía variables de entorno o `.env` (URL de BD y claves futuras).
+- `analisis_menciones_app.py`: tablero Streamlit con filtros, KPIs, tablas y descargas.
+- `requirements.txt`: dependencias necesarias.
+
+### Diagrama simple (texto)
+```
+[Streamlit UI]
+      |
+      v
+[analisis_core] --- [fuentes_web] (ddgs, stubs otras APIs)
+      |
+      v
+[datos_repository] -> SQLite (persistencia y métricas históricas)
+```
 
 ## Requisitos
-- Python 3.11 o superior recomendado.
+- Python 3.11+
+- Acceso a Internet para búsquedas con ddgs y descarga de páginas.
 
-## Crear y activar un entorno virtual
+## Instalación y ejecución
+1. Crear entorno virtual (ejemplo Linux/macOS):
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate
+   ```
+   En Windows (PowerShell):
+   ```powershell
+   python -m venv .venv
+   .\.venv\Scripts\activate
+   ```
+2. Instalar dependencias:
+   ```bash
+   pip install -r requirements.txt
+   ```
+3. (Opcional) Configurar `.env` para cambiar la base de datos o agregar claves de API:
+   ```env
+   DATABASE_URL=sqlite:///menciones.db
+   BRAVE_API_KEY=...
+   BING_API_KEY=...
+   SERPAPI_KEY=...
+   ```
+4. Ejecutar el tablero:
+   ```bash
+   python -m streamlit run analisis_menciones_app.py
+   ```
 
-### Windows (PowerShell)
-```powershell
-python -m venv .venv
-.\.venv\Scripts\activate
-```
+## Uso del tablero
+- Define hasta cinco términos asociados (se combinan en la query).
+- Elige profundidad (`Rápido`, `Normal`, `Profundo`) que mapea a 50/100/200 resultados.
+- Selecciona modo de coincidencia: frase exacta, todas las palabras o cualquiera.
+- (Opcional) Filtra por dominio (ej. `clarin.com`).
+- Pulsa **Analizar** para ver KPIs, top de palabras asociadas, páginas, dominios y descargas CSV/JSON.
 
-### macOS / Linux
-```bash
-python -m venv .venv
-source .venv/bin/activate
-```
+## Comportamiento y consideraciones
+- Se usa `ddgs` con `safesearch="moderate"` y sin parámetros obsoletos.
+- Cada URL se descarga una vez y se guarda en SQLite con su dominio, título y texto para construir memoria histórica.
+- Los conteos de menciones se almacenan por página y término (relación página–término).
+- La limpieza de texto elimina URLs, menciones, números y tildes; se usan stopwords en español (NLTK) y se excluyen palabras de los términos buscados.
+- El análisis trabaja sobre una muestra de resultados (no toda la web) para un crawling respetuoso.
 
-## Instalación de dependencias
-Instala todas las dependencias con:
-```bash
-pip install -r requirements.txt
-```
+## Extensiones futuras
+- Implementar llamadas reales a Brave, Bing, Google CSE o SerpAPI en `fuentes_web.py` usando las claves de configuración.
+- Añadir TF-IDF o n-gramas avanzados para relevancia de términos.
+- Migrar SQLite a PostgreSQL cambiando `DATABASE_URL` en `.env`.
 
-## Uso básico
-Ejecuta el script y completa los datos solicitados en consola:
-```bash
-python analisis_menciones.py
-```
-El programa pedirá:
-1. **Término o nombre a analizar.**
-2. **Fecha de inicio (YYYY-MM-DD).**
-3. **Fecha de fin (YYYY-MM-DD).**
-4. **Cantidad máxima de resultados web.**
-
-## ¿Qué hace internamente?
-1. **Búsqueda web con DuckDuckGo (`ddgs`).** Obtiene URLs, títulos y snippets. El filtro de fechas es aproximado porque la API no ofrece un filtro exacto por rango.
-2. **Descarga de cada página.** Usa `requests` para obtener el HTML y `BeautifulSoup` para concatenar todos los párrafos (`<p>`).
-3. **Filtro por término.** Solo se conservan las páginas cuyo texto contiene el término exacto (ignorando mayúsculas/minúsculas).
-4. **Conteo de menciones.** Cuenta cuántas veces aparece el término completo en cada página.
-5. **Limpieza de texto.** Convierte a minúsculas, quita URLs, hashtags, menciones, números, puntuación y acentos.
-6. **Stopwords en español.** Se descargan automáticamente si no están disponibles (NLTK). También se excluyen las palabras que forman el término buscado y las palabras muy cortas (<=2 caracteres).
-7. **Frecuencias.** Calcula las palabras más repetidas (por defecto las 30 más frecuentes) usando `collections.Counter`.
-8. **Salida a archivos.**
-   - `paginas_web.csv`: filas con fuente, título, URL, fecha (si se dispone), número de menciones y texto completo.
-   - `frecuencias_palabras.csv`: ranking de palabras y sus frecuencias, ordenado de mayor a menor.
-
-## Ejemplo breve de ejecución
-```
-=== Análisis de menciones en la web ===
-Ingrese el término o nombre a analizar (ej: Lionel Messi): Lionel Messi
-Ingrese la fecha de inicio (YYYY-MM-DD): 2024-01-01
-Ingrese la fecha de fin (YYYY-MM-DD): 2024-12-31
-Ingrese la cantidad máxima de resultados web (ej: 50): 50
-```
-
-## Archivos de salida
-- **`paginas_web.csv`**: información detallada de cada página analizada.
-- **`frecuencias_palabras.csv`**: listado de palabras frecuentes tras limpiar los textos.
-
-## Nota sobre el respeto a los sitios consultados
-Utiliza el script de forma responsable y respeta los términos de servicio de los sitios visitados. Evita cargas excesivas y cumple la normativa legal aplicable.
+## Nota de uso responsable
+Utiliza la herramienta respetando términos de servicio de los buscadores y sitios web. Evita ráfagas de peticiones y considera backoff o caché adicional si amplías la profundidad.
