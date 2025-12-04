@@ -30,10 +30,6 @@ MODO_COINCIDENCIA_UI = {
 }
 
 
-def _formatear_url_clickable(url: str) -> str:
-    return f"[Abrir enlace]({url})"
-
-
 def _mostrar_kpis(resumen: dict):
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Páginas con menciones", resumen.get("paginas_con_menciones", 0))
@@ -70,9 +66,16 @@ def _mostrar_detalle_resumen(resumen: dict):
 
 def _mostrar_tabla_paginas(df_paginas: pd.DataFrame):
     columnas_menciones = [c for c in df_paginas.columns if c.startswith("menciones_termino_")]
-    columnas = ["titulo", "dominio", "url", "menciones_totales_pagina", *columnas_menciones]
+    columnas = [
+        "titulo",
+        "dominio",
+        "url",
+        "fecha_publicacion",
+        "menciones_totales_pagina",
+        *columnas_menciones,
+    ]
     df_para_tabla = df_paginas[columnas].copy()
-    df_para_tabla["url"] = df_para_tabla["url"].apply(_formatear_url_clickable)
+    df_para_tabla["fecha_publicacion"] = df_para_tabla["fecha_publicacion"].fillna("")
     st.dataframe(
         df_para_tabla,
         use_container_width=True,

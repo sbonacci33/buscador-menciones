@@ -24,6 +24,7 @@ class ResultadoBusqueda:
     dominio: str
     snippet: str
     texto: str
+    fecha_publicacion: Optional[str]
     fuente: str = "ddg"
 
 
@@ -76,6 +77,7 @@ def buscar_ddg(
                 snippet = resultado.get("body") or resultado.get("snippet") or ""
                 dominio = urlparse(url).netloc
                 texto = extraer_texto_de_url(url)
+                fecha_publicacion = resultado.get("date") or resultado.get("published")
 
                 resultados.append(
                     ResultadoBusqueda(
@@ -84,6 +86,7 @@ def buscar_ddg(
                         dominio=dominio,
                         snippet=snippet,
                         texto=texto,
+                        fecha_publicacion=fecha_publicacion,
                         fuente="ddg",
                     )
                 )
