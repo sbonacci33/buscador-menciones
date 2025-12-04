@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import date
 from typing import List
+import io
 
 import pandas as pd
 import streamlit as st
@@ -30,15 +31,58 @@ MODO_COINCIDENCIA_UI = {
 }
 
 
+def _generar_pdf_simple(resumen: dict, df_paginas: pd.DataFrame) -> io.BytesIO:
+    """Genera un PDF básico con fpdf si está disponible; si no, devuelve texto plano."""
+
+    buffer = io.BytesIO()
+    try:
+        from fpdf import FPDF
+
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font("Arial", size=12)
+        pdf.cell(200, 10, txt="Reporte de menciones", ln=1, align="C")
+        pdf.multi_cell(0, 10, txt=f"Términos: {', '.join(resumen.get('terminos', []))}")
+        pdf.multi_cell(
+            0,
+            10,
+            txt=(
+                f"Total resultados: {resumen.get('total_paginas_consultadas', 0)} | "
+                f"En rango: {resumen.get('paginas_en_rango_fecha', 0)} | "
+                f"Sin fecha: {resumen.get('paginas_sin_fecha', 0)}"
+            ),
+        )
+        pdf.multi_cell(0, 10, txt=f"Rango fechas: {resumen.get('fecha_desde')} a {resumen.get('fecha_hasta')}")
+        pdf.multi_cell(0, 10, txt=f"Dominios top: {resumen.get('dominios_top', {})}")
+        pdf.ln(5)
+        pdf.multi_cell(0, 10, txt="Páginas más relevantes:")
+        for _, fila in df_paginas.head(10).iterrows():
+            pdf.multi_cell(
+                0, 8, txt=f"- {fila.get('titulo', '')} ({fila.get('dominio', '')}) [{fila.get('fecha_publicacion', '')}]"
+            )
+        pdf.output(buffer)
+    except Exception:
+        buffer.write(
+            (
+                "Reporte de menciones\n"
+                f"Términos: {', '.join(resumen.get('terminos', []))}\n"
+                f"Total resultados: {resumen.get('total_paginas_consultadas', 0)}\n"
+            ).encode("utf-8")
+        )
+    buffer.seek(0)
+    return buffer
+
+
 def _mostrar_kpis(resumen: dict):
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Páginas con menciones", resumen.get("paginas_con_menciones", 0))
-    col2.metric("Menciones totales", resumen.get("menciones_totales_grupo", 0))
-    profundidad = resumen.get("profundidad", "")
-    max_resultados = resumen.get("max_resultados_muestra", 0)
-    col3.metric("Profundidad usada", f"{profundidad} ({max_resultados} resultados)")
-    col4.metric(
-        "Promedio menciones/página", f"{resumen.get('promedio_menciones_por_pagina', 0):.2f}"
+    col1.metric("Resultados totales", resumen.get("total_paginas_consultadas", 0))
+    col2.metric("Dentro de rango", resumen.get("paginas_en_rango_fecha", 0))
+    col3.metric("Sin fecha", resumen.get("paginas_sin_fecha", 0))
+    col4.metric("Menciones totales", resumen.get("menciones_totales_grupo", 0))
+
+    st.caption(
+        f"Profundidad {resumen.get('profundidad')} (hasta {resumen.get('max_resultados_muestra', 0)} páginas). "
+        "Una profundidad mayor puede tardar más porque se activa más crawling."
     )
 
 
@@ -58,6 +102,10 @@ def _mostrar_detalle_resumen(resumen: dict):
         st.warning(
             f"{resumen.get('paginas_excluidas_por_fecha')} páginas quedaron fuera del rango por fecha de publicación."
         )
+    st.markdown(
+        f"**Fecha más antigua:** {resumen.get('fecha_mas_antigua')} | "
+        f"**Más reciente:** {resumen.get('fecha_mas_reciente')}"
+    )
     st.markdown(
         "**Términos analizados:** " + ", ".join([f"`{t}`" for t in resumen.get("terminos", [])])
     )
@@ -84,6 +132,9 @@ def _mostrar_tabla_paginas(df_paginas: pd.DataFrame):
         "titulo",
         "dominio",
         "url",
+        "termino_encontrado",
+        "palabras_clave_asociadas",
+        "puntaje_relevancia",
         "menciones_totales_pagina",
         *columnas_menciones,
     ]
@@ -133,7 +184,10 @@ with st.sidebar:
     fecha_desde = st.date_input("Fecha desde", value=fecha_hoy)
     fecha_hasta = st.date_input("Fecha hasta", value=fecha_hoy)
 
-    profundidad = st.selectbox("Profundidad de búsqueda", list(PROFUNDIDAD_OPCIONES.keys()), index=1)
+    profundidad = st.slider(
+        "Profundidad de búsqueda (1=rápido, 5=profundo)", 1, 5, value=3,
+        help="Profundidades altas activan crawling extendido y pueden demorar más."
+    )
     modo_coincidencia_label = st.selectbox("Modo de coincidencia", list(MODO_COINCIDENCIA_UI.keys()), index=0)
     dominio_filtro = st.text_input("Filtrar por dominio (opcional)", help="Ej: clarin.com o .com.ar")
     incluir_sin_fecha = st.checkbox(
@@ -141,9 +195,13 @@ with st.sidebar:
         help="Si se desactiva, solo se mostrarán páginas con fecha de publicación identificada."
     )
     top_n_palabras = st.slider("Top palabras asociadas", 10, 50, value=30, step=5)
+    crawl_extendido = st.checkbox(
+        "Activar crawl extendido", value=False,
+        help="Explora enlaces secundarios hasta 3 saltos. Puede tardar más."
+    )
 
     boton_analizar = st.button("Analizar", type="primary")
-    st.button("Reiniciar consulta", on_click=_reiniciar_consulta)
+    st.button("🔄 Realizar nueva búsqueda", on_click=_reiniciar_consulta)
 
 
 st.title("Tablero de análisis de menciones en la web")
@@ -182,6 +240,7 @@ else:
                 dominio_filtro=dominio_filtro.strip() or None,
                 incluir_paginas_sin_fecha=incluir_sin_fecha,
                 top_n_palabras=top_n_palabras,
+                crawl_extendido=crawl_extendido,
             )
             df_top_bigramas = contar_bigramas(df_paginas, grupo_terminos, top_n=15)
 
@@ -207,6 +266,18 @@ else:
                 )
                 st.bar_chart(menciones_data.set_index("término"))
 
+                st.markdown("### Distribución temporal")
+                fechas_conocidas = df_paginas[df_paginas["fecha_publicacion"] != "sin_fecha"]
+                if not fechas_conocidas.empty:
+                    hist_data = (
+                        fechas_conocidas.groupby("fecha_publicacion")[["url"]]
+                        .count()
+                        .rename(columns={"url": "frecuencia"})
+                    )
+                    st.bar_chart(hist_data)
+                else:
+                    st.caption("No se detectaron fechas en los resultados.")
+
             with tab_palabras:
                 st.subheader("Palabras asociadas")
                 if df_top_palabras.empty:
@@ -214,6 +285,21 @@ else:
                 else:
                     st.dataframe(df_top_palabras, use_container_width=True)
                     st.bar_chart(df_top_palabras.set_index("palabra"))
+                    st.caption("Nube de palabras (tamaño ~ frecuencia)")
+                    try:
+                        from wordcloud import WordCloud
+                        import matplotlib.pyplot as plt
+
+                        wc = WordCloud(width=800, height=400, background_color="white")
+                        wc.generate_from_frequencies(
+                            {row.palabra: row.frecuencia for row in df_top_palabras.itertuples()}
+                        )
+                        fig, ax = plt.subplots()
+                        ax.imshow(wc, interpolation="bilinear")
+                        ax.axis("off")
+                        st.pyplot(fig)
+                    except Exception:
+                        st.caption("Instala 'wordcloud' para ver la nube de palabras.")
 
                 st.markdown("---")
                 st.subheader("Bigramas frecuentes (experimental)")
@@ -233,6 +319,13 @@ else:
                 st.download_button("Descargar páginas (CSV)", data=csv_paginas, file_name="paginas_menciones.csv")
                 st.download_button(
                     "Descargar páginas (JSON)", data=df_filtrado.to_json(orient="records"), file_name="paginas_menciones.json"
+                )
+                pdf_buffer = _generar_pdf_simple(resumen, df_filtrado)
+                st.download_button(
+                    "Descargar reporte (PDF)",
+                    data=pdf_buffer,
+                    file_name="reporte_menciones.pdf",
+                    mime="application/pdf",
                 )
 
             with tab_dominios:

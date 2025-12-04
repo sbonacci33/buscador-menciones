@@ -30,6 +30,21 @@ class Settings(BaseSettings):
         default=None, description="Clave de SerpAPI", alias="SERPAPI_KEY"
     )
 
+    # Configuración adicional de crawling y reportes
+    crawl_timeout: int = Field(
+        10, description="Tiempo máximo de espera para descargar una página en segundos"
+    )
+    crawl_profundo_max_enlaces: int = Field(
+        20,
+        description="Cantidad máxima de enlaces adicionales a seguir cuando el modo extendido está activo",
+    )
+    crawl_profundidad_maxima: int = Field(
+        5, description="Profundidad máxima de exploración permitida"
+    )
+    reporte_titulo: str = Field(
+        "Reporte de menciones", description="Título para los reportes generados"
+    )
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
