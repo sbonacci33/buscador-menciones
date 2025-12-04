@@ -217,6 +217,7 @@ def _procesar_resultado(
         "url": resultado.url,
         "dominio": resultado.dominio or urlparse(resultado.url).netloc,
         "texto": resultado.texto,
+        "fecha_publicacion": resultado.fecha_publicacion,
         "menciones_totales_pagina": menciones_totales,
         "menciones_por_termino": menciones_por_termino,
     }
