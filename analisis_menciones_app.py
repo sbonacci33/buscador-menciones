@@ -7,11 +7,19 @@ from typing import List
 import pandas as pd
 import streamlit as st
 
-from analisis_core import (
-    PROFUNDIDAD_OPCIONES,
-    analizar_menciones_web,
-    contar_bigramas,
-)
+try:
+    from analisis_core import (
+        PROFUNDIDAD_OPCIONES,
+        analizar_menciones_web,
+        contar_bigramas,
+    )
+except ModuleNotFoundError as exc:
+    st.set_page_config(page_title="Monitoreo de menciones", layout="wide")
+    st.error(
+        "No se encontró una dependencia necesaria (por ejemplo, SQLAlchemy). "
+        "Ejecuta `pip install -r requirements.txt` en tu entorno virtual y vuelve a cargar la app."
+    )
+    st.stop()
 
 st.set_page_config(page_title="Monitoreo de menciones", layout="wide")
 
@@ -86,6 +94,14 @@ def _filtros_tab_paginas(df_paginas: pd.DataFrame) -> pd.DataFrame:
     return df_filtrado
 
 
+def _reiniciar_consulta() -> None:
+    """Limpia el estado de la aplicación y recarga la página."""
+
+    for key in list(st.session_state.keys()):
+        st.session_state.pop(key)
+    st.experimental_rerun()
+
+
 with st.sidebar:
     st.header("Configuración")
     st.caption("Define los términos y el alcance del muestreo. Analizamos los primeros resultados.")
@@ -108,6 +124,7 @@ with st.sidebar:
     top_n_palabras = st.slider("Top palabras asociadas", 10, 50, value=30, step=5)
 
     boton_analizar = st.button("Analizar", type="primary")
+    st.button("Reiniciar consulta", on_click=_reiniciar_consulta)
 
 
 st.title("Tablero de análisis de menciones en la web")
