@@ -21,7 +21,9 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     create_engine,
+    inspect,
     select,
+    text as sql_text,
 )
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.declarative import declarative_base
@@ -86,10 +88,25 @@ def session_scope() -> Iterable[Session]:
         session.close()
 
 
-def inicializar_bd() -> None:
-    """Crea las tablas en la base de datos si no existen."""
+def ensure_schema() -> None:
+    """Asegura que las tablas y columnas necesarias existan."""
 
     Base.metadata.create_all(engine)
+
+    inspector = inspect(engine)
+    columnas_paginas = {col["name"] for col in inspector.get_columns("paginas")}
+    if "fecha_publicacion" not in columnas_paginas:
+        with engine.connect() as conn:
+            conn.execute(
+                sql_text("ALTER TABLE paginas ADD COLUMN fecha_publicacion DATETIME")
+            )
+            conn.commit()
+
+
+def inicializar_bd() -> None:
+    """Crea las tablas en la base de datos si no existen y aplica migraciones simples."""
+
+    ensure_schema()
 
 
 def _obtener_o_crear_termino(session: Session, termino_texto: str) -> Termino:

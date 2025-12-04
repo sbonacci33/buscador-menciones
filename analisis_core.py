@@ -125,6 +125,20 @@ def _contar_menciones_en_texto(
     return conteo
 
 
+def _puntaje_relevancia(texto_limpio: str, termino: str) -> float:
+    """Calcula una similitud sencilla basada en solapamiento de palabras."""
+
+    termino_limpio = limpiar_texto(termino)
+    if not termino_limpio:
+        return 0.0
+    palabras_texto = set(texto_limpio.split())
+    palabras_termino = set(termino_limpio.split())
+    if not palabras_texto or not palabras_termino:
+        return 0.0
+    interseccion = palabras_texto.intersection(palabras_termino)
+    return len(interseccion) / len(palabras_termino)
+
+
 # =========================
 # PALABRAS ASOCIADAS
 # =========================
@@ -164,11 +178,17 @@ def contar_palabras_asociadas(
     palabras_filtradas: List[str] = []
     for palabra in todas_las_palabras:
         palabra_normalizada = unidecode(palabra.lower())
-        if len(palabra_normalizada) <= 2:
+        if len(palabra_normalizada) <= 3:
             continue
         if palabra_normalizada in stopwords_es:
             continue
         if palabra_normalizada in palabras_terminos:
+            continue
+        if palabra_normalizada.isnumeric():
+            continue
+        if palabra_normalizada.startswith("http"):
+            continue
+        if palabra_normalizada in {"amp", "utm", "https", "http"}:
             continue
         palabras_filtradas.append(palabra_normalizada)
 
@@ -224,6 +244,9 @@ def _procesar_resultado(
     if menciones_totales == 0:
         return None
 
+    termino_principal = max(menciones_por_termino, key=menciones_por_termino.get)
+    puntaje = _puntaje_relevancia(texto_limpio, termino_principal)
+
     registro: Dict[str, object] = {
         "titulo": resultado.titulo,
         "url": resultado.url,
@@ -232,6 +255,11 @@ def _procesar_resultado(
         "fecha_publicacion": resultado.fecha_publicacion,
         "menciones_totales_pagina": menciones_totales,
         "menciones_por_termino": menciones_por_termino,
+        "termino_encontrado": termino_principal,
+        "puntaje_relevancia": puntaje,
+        "profundidad": resultado.profundidad,
+        "canonico": resultado.canonica or resultado.url,
+        "palabras_clave_asociadas": ", ".join(list(Counter(texto_limpio.split()).keys())[:5]),
     }
 
     for idx, termino in enumerate(grupo_terminos, start=1):
@@ -244,11 +272,12 @@ def analizar_menciones_web(
     grupo_terminos: List[str],
     fecha_desde: str,
     fecha_hasta: str,
-    profundidad: str = "Normal",
+    profundidad: int = 3,
     modo_coincidencia: str = "frase_exacta",
     dominio_filtro: str | None = None,
     top_n_palabras: int = 30,
     incluir_paginas_sin_fecha: bool = True,
+    crawl_extendido: bool = False,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, dict]:
     """Ejecuta la búsqueda web y devuelve páginas, top palabras y estadísticas."""
 
@@ -264,6 +293,7 @@ def analizar_menciones_web(
         profundidad=profundidad,
         modo_coincidencia=modo,
         dominio_filtro=dominio_filtro,
+        crawl_extendido=crawl_extendido,
     )
 
     registros: List[Dict[str, object]] = []
@@ -276,6 +306,8 @@ def analizar_menciones_web(
         registro["fecha_publicacion_dt"] = fecha_publicacion_dt
         if fecha_publicacion_dt:
             registro["fecha_publicacion"] = fecha_publicacion_dt.date().isoformat()
+        else:
+            registro["fecha_publicacion"] = "sin_fecha"
 
         pagina_id = guardar_pagina(
             registro["url"], registro["titulo"], registro["texto"], fecha_publicacion_dt
@@ -303,6 +335,9 @@ def analizar_menciones_web(
             "promedio_menciones_por_pagina": 0,
             "paginas_top_mostradas": 0,
             "dominios_top": {},
+            "paginas_en_rango_fecha": 0,
+            "fecha_mas_antigua": "sin_fecha",
+            "fecha_mas_reciente": "sin_fecha",
         }
         return df_paginas, pd.DataFrame(columns=["palabra", "frecuencia"]), resumen
 
@@ -321,6 +356,8 @@ def analizar_menciones_web(
     if fecha_hasta_dt is not None:
         mask_rango &= df_paginas["fecha_publicacion_dt"] <= fecha_hasta_dt
 
+    paginas_en_rango = int(mask_rango.sum())
+
     if incluir_paginas_sin_fecha:
         mask_final = mask_rango | df_paginas["fecha_publicacion_dt"].isna()
     else:
@@ -335,6 +372,17 @@ def analizar_menciones_web(
     paginas_sin_fecha = int(df_paginas["fecha_publicacion_dt"].isna().sum())
     paginas_despues_filtro = len(df_paginas)
     paginas_excluidas = int(total_antes_filtro - paginas_despues_filtro)
+
+    fecha_min = (
+        df_paginas["fecha_publicacion_dt"].min().date().isoformat()
+        if df_paginas["fecha_publicacion_dt"].notna().any()
+        else "sin_fecha"
+    )
+    fecha_max = (
+        df_paginas["fecha_publicacion_dt"].max().date().isoformat()
+        if df_paginas["fecha_publicacion_dt"].notna().any()
+        else "sin_fecha"
+    )
 
     df_paginas = df_paginas.sort_values(by="menciones_totales_pagina", ascending=False)
 
@@ -377,6 +425,9 @@ def analizar_menciones_web(
         "paginas_despues_filtro_fecha": paginas_despues_filtro,
         "paginas_sin_fecha": paginas_sin_fecha,
         "paginas_excluidas_por_fecha": paginas_excluidas,
+        "paginas_en_rango_fecha": paginas_en_rango,
+        "fecha_mas_antigua": fecha_min,
+        "fecha_mas_reciente": fecha_max,
         "incluye_paginas_sin_fecha": incluir_paginas_sin_fecha,
     }
 
