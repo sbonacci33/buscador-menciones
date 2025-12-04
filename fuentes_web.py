@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup
-from ddgs import DDGS, DDGSException
+from ddgs import DDGS
 
 USER_AGENT = "Mozilla/5.0 (compatible; BuscadorMenciones/1.0; +https://example.com)"
 
@@ -87,9 +87,8 @@ def buscar_ddg(
                         fuente="ddg",
                     )
                 )
-    except DDGSException:
-        return resultados
-    except Exception:
+    except Exception as e:
+        print(f"Error durante la búsqueda en DDG: {e}")
         return resultados
 
     return resultados
