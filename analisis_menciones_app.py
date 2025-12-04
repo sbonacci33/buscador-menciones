@@ -47,6 +47,18 @@ def _mostrar_detalle_resumen(resumen: dict):
         f"**Plazo analizado:** {resumen.get('fecha_desde')} a {resumen.get('fecha_hasta')}"
     )
     st.markdown(
+        f"**Páginas antes del filtro por fecha:** {resumen.get('paginas_antes_filtro_fecha', 0)}"
+        f" | **Después del filtro:** {resumen.get('paginas_despues_filtro_fecha', 0)}"
+    )
+    if resumen.get("paginas_sin_fecha"):
+        st.info(
+            f"{resumen.get('paginas_sin_fecha')} páginas no tenían fecha detectable y se marcaron como 'Desconocida'."
+        )
+    if resumen.get("paginas_excluidas_por_fecha"):
+        st.warning(
+            f"{resumen.get('paginas_excluidas_por_fecha')} páginas quedaron fuera del rango por fecha de publicación."
+        )
+    st.markdown(
         "**Términos analizados:** " + ", ".join([f"`{t}`" for t in resumen.get("terminos", [])])
     )
     st.markdown(
@@ -56,7 +68,8 @@ def _mostrar_detalle_resumen(resumen: dict):
     )
     st.markdown(
         f"**Modo de coincidencia:** {resumen.get('modo_coincidencia')}  "
-        f"**Dominio filtrado:** {resumen.get('dominio_filtro') or 'Sin filtro'}"
+        f"**Dominio filtrado:** {resumen.get('dominio_filtro') or 'Sin filtro'}  "
+        f"**Profundidad:** {resumen.get('profundidad')} ({resumen.get('max_resultados_muestra')} resultados)"
     )
     st.caption(
         "Se analiza una muestra de resultados iniciales devueltos por DuckDuckGo. "
@@ -67,15 +80,15 @@ def _mostrar_detalle_resumen(resumen: dict):
 def _mostrar_tabla_paginas(df_paginas: pd.DataFrame):
     columnas_menciones = [c for c in df_paginas.columns if c.startswith("menciones_termino_")]
     columnas = [
+        "fecha_publicacion",
         "titulo",
         "dominio",
         "url",
-        "fecha_publicacion",
         "menciones_totales_pagina",
         *columnas_menciones,
     ]
     df_para_tabla = df_paginas[columnas].copy()
-    df_para_tabla["fecha_publicacion"] = df_para_tabla["fecha_publicacion"].fillna("")
+    df_para_tabla["fecha_publicacion"] = df_para_tabla["fecha_publicacion"].fillna("Desconocida")
     st.dataframe(
         df_para_tabla,
         use_container_width=True,
@@ -84,15 +97,14 @@ def _mostrar_tabla_paginas(df_paginas: pd.DataFrame):
 
 
 def _filtros_tab_paginas(df_paginas: pd.DataFrame) -> pd.DataFrame:
-    dominios = sorted(df_paginas["dominio"].dropna().unique().tolist())
-    dominio_sel = st.multiselect("Filtrar por dominio", dominios)
+    filtro_dominio_contiene = st.text_input("Filtrar dominios que contengan", "")
     min_menciones = st.slider(
         "Menciones mínimas en página", 0, int(df_paginas["menciones_totales_pagina"].max()), value=0
     )
 
     df_filtrado = df_paginas.copy()
-    if dominio_sel:
-        df_filtrado = df_filtrado[df_filtrado["dominio"].isin(dominio_sel)]
+    if filtro_dominio_contiene:
+        df_filtrado = df_filtrado[df_filtrado["dominio"].str.contains(filtro_dominio_contiene, case=False, na=False)]
     df_filtrado = df_filtrado[df_filtrado["menciones_totales_pagina"] >= min_menciones]
     return df_filtrado
 
@@ -102,7 +114,7 @@ def _reiniciar_consulta() -> None:
 
     for key in list(st.session_state.keys()):
         st.session_state.pop(key)
-    st.experimental_rerun()
+    st.rerun()
 
 
 with st.sidebar:
@@ -124,6 +136,10 @@ with st.sidebar:
     profundidad = st.selectbox("Profundidad de búsqueda", list(PROFUNDIDAD_OPCIONES.keys()), index=1)
     modo_coincidencia_label = st.selectbox("Modo de coincidencia", list(MODO_COINCIDENCIA_UI.keys()), index=0)
     dominio_filtro = st.text_input("Filtrar por dominio (opcional)", help="Ej: clarin.com o .com.ar")
+    incluir_sin_fecha = st.checkbox(
+        "Incluir páginas sin fecha detectada", value=True,
+        help="Si se desactiva, solo se mostrarán páginas con fecha de publicación identificada."
+    )
     top_n_palabras = st.slider("Top palabras asociadas", 10, 50, value=30, step=5)
 
     boton_analizar = st.button("Analizar", type="primary")
@@ -133,7 +149,7 @@ with st.sidebar:
 st.title("Tablero de análisis de menciones en la web")
 st.caption(
     "Explora menciones de hasta cinco términos sobre una muestra de resultados. "
-    "La app usa DuckDuckGo (ddgs) y analiza solo la cantidad de resultados indicada en la profundidad seleccionada."
+    "La app usa DuckDuckGo (ddgs), intenta detectar la fecha de publicación real y analiza solo la cantidad de resultados indicada en la profundidad seleccionada."
 )
 
 if not boton_analizar:
@@ -164,6 +180,7 @@ else:
                 profundidad=profundidad,
                 modo_coincidencia=modo_coincidencia,
                 dominio_filtro=dominio_filtro.strip() or None,
+                incluir_paginas_sin_fecha=incluir_sin_fecha,
                 top_n_palabras=top_n_palabras,
             )
             df_top_bigramas = contar_bigramas(df_paginas, grupo_terminos, top_n=15)
@@ -208,6 +225,7 @@ else:
 
             with tab_paginas:
                 st.subheader("Detalle de páginas")
+                st.caption("El filtro de fechas se aplica sobre la fecha de publicación detectada en cada página.")
                 df_filtrado = _filtros_tab_paginas(df_paginas)
                 _mostrar_tabla_paginas(df_filtrado)
 
@@ -235,6 +253,12 @@ else:
                 )
                 st.markdown(f"**Modo de coincidencia:** {modo_coincidencia_label}")
                 st.markdown(f"**Dominio filtrado:** {dominio_filtro if dominio_filtro else 'Sin filtro'}")
+                st.markdown(
+                    f"**Filtro por fecha:** {resumen.get('fecha_desde')} a {resumen.get('fecha_hasta')} (basado en fecha de publicación detectada)"
+                )
+                st.markdown(
+                    f"**Páginas sin fecha incluida:** {'Sí' if resumen.get('incluye_paginas_sin_fecha') else 'No'}"
+                )
                 st.markdown("**Selección de páginas:** se muestran las páginas con más menciones en la muestra consultada.")
                 st.markdown(
                     "**Qué significan los modos:**\n"
