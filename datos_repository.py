@@ -42,6 +42,7 @@ class Pagina(Base):
     dominio = Column(String, index=True)
     titulo = Column(String)
     texto = Column(Text)
+    fecha_publicacion = Column(DateTime, nullable=True)
     fecha_primera_vez_vista = Column(DateTime, default=datetime.utcnow)
     fecha_ultima_vez_vista = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -102,7 +103,7 @@ def _obtener_o_crear_termino(session: Session, termino_texto: str) -> Termino:
     return termino
 
 
-def guardar_pagina(url: str, titulo: str, texto: str) -> int:
+def guardar_pagina(url: str, titulo: str, texto: str, fecha_publicacion: datetime | None) -> int:
     """Inserta o actualiza una página y devuelve su ID."""
 
     dominio = urlparse(url).netloc
@@ -113,6 +114,7 @@ def guardar_pagina(url: str, titulo: str, texto: str) -> int:
             pagina.titulo = pagina.titulo or titulo
             pagina.texto = pagina.texto or texto
             pagina.dominio = pagina.dominio or dominio
+            pagina.fecha_publicacion = pagina.fecha_publicacion or fecha_publicacion
             pagina.fecha_ultima_vez_vista = ahora
         else:
             pagina = Pagina(
@@ -120,6 +122,7 @@ def guardar_pagina(url: str, titulo: str, texto: str) -> int:
                 dominio=dominio,
                 titulo=titulo,
                 texto=texto,
+                fecha_publicacion=fecha_publicacion,
                 fecha_primera_vez_vista=ahora,
                 fecha_ultima_vez_vista=ahora,
             )
@@ -181,6 +184,7 @@ def obtener_paginas_con_menciones(
                 "titulo": pagina.titulo or "",
                 "dominio": pagina.dominio,
                 "texto": pagina.texto or "",
+                "fecha_publicacion": pagina.fecha_publicacion,
                 "fecha_primera_vez_vista": pagina.fecha_primera_vez_vista,
                 "fecha_ultima_vez_vista": pagina.fecha_ultima_vez_vista,
                 "menciones_por_termino": menciones_map,

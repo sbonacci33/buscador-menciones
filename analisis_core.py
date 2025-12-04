@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from collections import Counter
 from typing import Counter as CounterType
 from typing import Dict, Iterable, List, Tuple
@@ -66,6 +67,17 @@ def limpiar_texto(texto: str) -> str:
     texto_limpio = unidecode(texto_limpio)
     texto_limpio = re.sub(r"\s+", " ", texto_limpio).strip()
     return texto_limpio
+
+
+def parsear_fecha_publicacion(fecha_str: str | None) -> datetime | None:
+    """Convierte una cadena de fecha en datetime si es posible."""
+
+    if not fecha_str:
+        return None
+    try:
+        return pd.to_datetime(fecha_str, errors="coerce")
+    except Exception:
+        return None
 
 
 # =========================
@@ -236,6 +248,7 @@ def analizar_menciones_web(
     modo_coincidencia: str = "frase_exacta",
     dominio_filtro: str | None = None,
     top_n_palabras: int = 30,
+    incluir_paginas_sin_fecha: bool = True,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, dict]:
     """Ejecuta la búsqueda web y devuelve páginas, top palabras y estadísticas."""
 
@@ -259,7 +272,14 @@ def analizar_menciones_web(
         if not registro:
             continue
 
-        pagina_id = guardar_pagina(registro["url"], registro["titulo"], registro["texto"])
+        fecha_publicacion_dt = parsear_fecha_publicacion(registro.get("fecha_publicacion"))
+        registro["fecha_publicacion_dt"] = fecha_publicacion_dt
+        if fecha_publicacion_dt:
+            registro["fecha_publicacion"] = fecha_publicacion_dt.date().isoformat()
+
+        pagina_id = guardar_pagina(
+            registro["url"], registro["titulo"], registro["texto"], fecha_publicacion_dt
+        )
         registrar_menciones(pagina_id, registro["menciones_por_termino"])
         registros.append(registro)
 
@@ -272,6 +292,10 @@ def analizar_menciones_web(
             "profundidad": profundidad,
             "modo_coincidencia": modo,
             "dominio_filtro": dominio_filtro,
+            "paginas_antes_filtro_fecha": 0,
+            "paginas_despues_filtro_fecha": 0,
+            "paginas_sin_fecha": 0,
+            "paginas_excluidas_por_fecha": 0,
             "total_paginas_consultadas": len(resultados_web),
             "paginas_con_menciones": 0,
             "menciones_totales_grupo": 0,
@@ -281,6 +305,36 @@ def analizar_menciones_web(
             "dominios_top": {},
         }
         return df_paginas, pd.DataFrame(columns=["palabra", "frecuencia"]), resumen
+
+    df_paginas["fecha_publicacion_dt"] = pd.to_datetime(
+        df_paginas.get("fecha_publicacion"), errors="coerce"
+    )
+
+    total_antes_filtro = len(df_paginas)
+    fecha_desde_dt = pd.to_datetime(fecha_desde) if fecha_desde else None
+    fecha_hasta_dt = pd.to_datetime(fecha_hasta) if fecha_hasta else None
+
+    mask_known = df_paginas["fecha_publicacion_dt"].notna()
+    mask_rango = mask_known
+    if fecha_desde_dt is not None:
+        mask_rango &= df_paginas["fecha_publicacion_dt"] >= fecha_desde_dt
+    if fecha_hasta_dt is not None:
+        mask_rango &= df_paginas["fecha_publicacion_dt"] <= fecha_hasta_dt
+
+    if incluir_paginas_sin_fecha:
+        mask_final = mask_rango | df_paginas["fecha_publicacion_dt"].isna()
+    else:
+        mask_final = mask_rango
+
+    df_paginas = df_paginas.loc[mask_final]
+    df_paginas["fecha_publicacion"] = df_paginas["fecha_publicacion_dt"].dt.date.astype(
+        "string"
+    )
+    df_paginas.loc[df_paginas["fecha_publicacion"].isna(), "fecha_publicacion"] = "Desconocida"
+
+    paginas_sin_fecha = int(df_paginas["fecha_publicacion_dt"].isna().sum())
+    paginas_despues_filtro = len(df_paginas)
+    paginas_excluidas = int(total_antes_filtro - paginas_despues_filtro)
 
     df_paginas = df_paginas.sort_values(by="menciones_totales_pagina", ascending=False)
 
@@ -309,7 +363,9 @@ def analizar_menciones_web(
         "profundidad": profundidad,
         "modo_coincidencia": modo,
         "dominio_filtro": dominio_filtro,
-        "max_resultados_muestra": PROFUNDIDAD_OPCIONES.get(profundidad, PROFUNDIDAD_OPCIONES["Normal"]),
+        "max_resultados_muestra": PROFUNDIDAD_OPCIONES.get(
+            profundidad, PROFUNDIDAD_OPCIONES["Normal"]
+        ),
         "total_paginas_consultadas": len(resultados_web),
         "paginas_con_menciones": paginas_con_menciones,
         "menciones_totales_grupo": menciones_totales_grupo,
@@ -317,6 +373,11 @@ def analizar_menciones_web(
         "promedio_menciones_por_pagina": promedio,
         "paginas_top_mostradas": len(df_paginas),
         "dominios_top": dominios_top,
+        "paginas_antes_filtro_fecha": total_antes_filtro,
+        "paginas_despues_filtro_fecha": paginas_despues_filtro,
+        "paginas_sin_fecha": paginas_sin_fecha,
+        "paginas_excluidas_por_fecha": paginas_excluidas,
+        "incluye_paginas_sin_fecha": incluir_paginas_sin_fecha,
     }
 
     return df_paginas, df_top_palabras, resumen

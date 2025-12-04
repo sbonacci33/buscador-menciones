@@ -7,11 +7,12 @@ interfaz homogénea.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Tuple
 from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup
+from dateutil import parser
 from ddgs import DDGS
 
 USER_AGENT = "Mozilla/5.0 (compatible; BuscadorMenciones/1.0; +https://example.com)"
@@ -28,7 +29,7 @@ class ResultadoBusqueda:
     fuente: str = "ddg"
 
 
-PROFUNDIDAD_OPCIONES = {"Rápido": 50, "Normal": 100, "Profundo": 200}
+PROFUNDIDAD_OPCIONES = {"Rápido": 50, "Normal": 150, "Profundo": 300}
 
 
 def construir_query(grupo_terminos: List[str], modo_coincidencia: str) -> str:
@@ -39,18 +40,54 @@ def construir_query(grupo_terminos: List[str], modo_coincidencia: str) -> str:
     return " ".join([f'"{t}"' for t in grupo_terminos])
 
 
-def extraer_texto_de_url(url: str, timeout: int = 10) -> str:
-    """Descarga una URL y concatena el texto de sus párrafos."""
+def _parsear_fecha(fecha_str: str) -> Optional[str]:
+    try:
+        fecha = parser.parse(fecha_str)
+        return fecha.date().isoformat()
+    except Exception:
+        return None
+
+
+def extraer_fecha_publicacion(soup: BeautifulSoup) -> Optional[str]:
+    """Intenta encontrar la fecha de publicación en metatags o etiquetas <time>."""
+
+    meta_props = [
+        ("property", "article:published_time"),
+        ("name", "date"),
+        ("itemprop", "datePublished"),
+        ("name", "pubdate"),
+    ]
+
+    for attr, value in meta_props:
+        tag = soup.find("meta", attrs={attr: value})
+        if tag and (contenido := tag.get("content")):
+            fecha_parseada = _parsear_fecha(contenido)
+            if fecha_parseada:
+                return fecha_parseada
+
+    for time_tag in soup.find_all("time"):
+        contenido = time_tag.get("datetime") or time_tag.get_text(strip=True)
+        if contenido:
+            fecha_parseada = _parsear_fecha(contenido)
+            if fecha_parseada:
+                return fecha_parseada
+
+    return None
+
+
+def extraer_texto_y_fecha_de_url(url: str, timeout: int = 10) -> Tuple[str, Optional[str]]:
+    """Descarga una URL y devuelve texto y fecha de publicación si se detecta."""
 
     try:
         resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=timeout)
         if resp.status_code != 200:
-            return ""
+            return "", None
         soup = BeautifulSoup(resp.text, "html.parser")
         parrafos = [p.get_text(" ", strip=True) for p in soup.find_all("p")]
-        return " ".join(parrafos)
+        fecha_publicacion = extraer_fecha_publicacion(soup)
+        return " ".join(parrafos), fecha_publicacion
     except Exception:
-        return ""
+        return "", None
 
 
 def buscar_ddg(
@@ -70,14 +107,14 @@ def buscar_ddg(
                 url = resultado.get("href") or resultado.get("url")
                 if not url:
                     continue
-                if dominio_filtro and dominio_filtro.lower() not in url.lower():
+                dominio = urlparse(url).netloc
+                if dominio_filtro and dominio_filtro.lower() not in dominio.lower():
                     continue
 
                 titulo = resultado.get("title") or ""
                 snippet = resultado.get("body") or resultado.get("snippet") or ""
-                dominio = urlparse(url).netloc
-                texto = extraer_texto_de_url(url)
-                fecha_publicacion = resultado.get("date") or resultado.get("published")
+                texto, fecha_detectada = extraer_texto_y_fecha_de_url(url)
+                fecha_publicacion = fecha_detectada or resultado.get("date") or resultado.get("published")
 
                 resultados.append(
                     ResultadoBusqueda(
